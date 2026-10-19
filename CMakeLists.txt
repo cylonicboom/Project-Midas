@@ -7,13 +7,36 @@ project(ge007 C)
 
 set(CMAKE_C_STANDARD 11)
 
-add_compile_options(
-    -m32
+# GE_64BIT: build for the host's native pointer width instead of -m32. This is
+# the rehearsal switch for the 64-bit lift; the shipping builds stay 32-bit
+# until it is done, so OFF changes nothing. Everything width-specific lives in
+# these lists so the rest of the file does not have to know.
+option(GE_64BIT "Build 64-bit (lift in progress; the 32-bit builds ship)" OFF)
+if(GE_64BIT)
+    # x86_64 is SSE by definition. arm64 NEON is already strict single
+    # precision, but the compiler fuses multiply-adds there by default, and a
+    # fused a*b+c rounds differently from the two-step N64 FPU result; that
+    # flips the same borderline comparisons x87 excess precision did below.
+    set(GE_ARCH_C_FLAGS -ffp-contract=off)
+    set(GE_ARCH_LINK_FLAGS)
+    # -malign-data is x86-only (gcc rejects it on aarch64)
+    set(GE_ARCH_DATA_FLAGS)
+else()
     # Use SSE scalar floats so every operation rounds to single precision like
     # the N64 FPU; x87's 80-bit excess precision flips borderline comparisons
     # (it broke the stan.c tile-walk edge test and room visibility in Egypt).
-    -msse2
-    -mfpmath=sse
+    set(GE_ARCH_C_FLAGS -m32 -msse2 -mfpmath=sse)
+    set(GE_ARCH_LINK_FLAGS -m32)
+    set(GE_ARCH_DATA_FLAGS -m32 -malign-data=abi)
+endif()
+# data-only TUs that must keep their globals contiguous and ABI-aligned
+set(GE_DATA_TU_OPTIONS -fno-toplevel-reorder -Og)
+if(NOT GE_64BIT)
+    list(APPEND GE_DATA_TU_OPTIONS -malign-data=abi)
+endif()
+
+add_compile_options(
+    ${GE_ARCH_C_FLAGS}
     -fno-strict-aliasing
     -fwrapv
     -funsigned-char
@@ -45,12 +68,12 @@ if(WIN32)
     # image base above the N64 segment range so gfx_pc.cpp seg_addr can tell
     # addresses from segment refs, and use a 16MB stack (recursive room/portal
     # walks overflow 1MB).
-    add_link_options(-m32 -static-libgcc -static-libstdc++
+    add_link_options(${GE_ARCH_LINK_FLAGS} -static-libgcc -static-libstdc++
                      -Wl,--image-base=0x10000000 -Wl,--disable-dynamicbase
                      -Wl,--stack,16777216)
     link_libraries(dbghelp)
 else()
-    add_link_options(-m32 -no-pie)
+    add_link_options(${GE_ARCH_LINK_FLAGS} -no-pie)
 endif()
 
 add_compile_definitions(
@@ -174,7 +197,7 @@ set(GU_SRC
 # Known caveats: bg .c interior point tables, ANIM_DATA_* streams and
 # oddtextures texel data are big-endian blobs.
 set(ASSET_C_FLAGS
-    -m32 -malign-data=abi
+    ${GE_ARCH_DATA_FLAGS}
     -fms-extensions -ffreestanding -fno-strict-aliasing -fwrapv -funsigned-char
     -fno-common -fno-zero-initialized-in-bss -fno-toplevel-reorder -fno-pic
     -Og -w
@@ -287,7 +310,7 @@ set(ASSET_LOOSE_FALLBACK_SRC
 # offset arithmetic - they must tile contiguously in declaration order.
 # Kept at -Og with the tree at -O2: data-only TUs, layout is the contract.
 set_source_files_properties(assets/animationtable_data.c assets/animationtable_entries.c
-    PROPERTIES COMPILE_OPTIONS "-fno-toplevel-reorder;-malign-data=abi;-Og")
+    PROPERTIES COMPILE_OPTIONS "${GE_DATA_TU_OPTIONS}")
 # ---------------------------------------------------------------------------
 
 # Port layer (grows as PD-derived pieces land; see docs/port/).
@@ -317,7 +340,7 @@ if(GE_SANITIZE)
     # tiling, so exempt the data-only TUs (manifest assets are already
     # uninstrumented).
     set_source_files_properties(assets/animationtable_data.c assets/animationtable_entries.c
-        PROPERTIES COMPILE_OPTIONS "-fno-toplevel-reorder;-malign-data=abi;-Og;-fno-sanitize=all")
+        PROPERTIES COMPILE_OPTIONS "${GE_DATA_TU_OPTIONS};-fno-sanitize=all")
     set_source_files_properties(assets/oddtextures.c assets/rarewarelogo.c
         assets/font_dl.c assets/font/fontBankGothic.c assets/font/fontZurichBold.c
         PROPERTIES COMPILE_OPTIONS "-fno-sanitize=all")
