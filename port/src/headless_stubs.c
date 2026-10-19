@@ -85,3 +85,60 @@ f32 portInputMouseAimScale(void)
 {
     return 1.0f;
 }
+
+/* Entry points video.c / input_pc.c grew after the stubs above; headless
+ * answers with the same compiled-in defaults (no ini, no devices). */
+void portVideoKbdDigitalMove(s32 *dx, s32 *dy)
+{
+    *dx = 0;
+    *dy = 0;
+}
+
+/* [display] hud_wide: -1 = not set yet, the save's value stands */
+s32 portHudWideCfg(void)
+{
+    return -1;
+}
+
+void portHudWideAdopt(s32 wide)
+{
+}
+
+/* per-player crosshair: -2 = none (follows crosshair_color), -1 = red, else 0xRRGGBB */
+s32 portPlayerCrosshairOwn(s32 player)
+{
+    return -2;
+}
+
+s32 portPlayerCrosshairColor(s32 player)
+{
+    return -1;
+}
+
+void portPlayerCrosshairSet(s32 player, s32 rgb)
+{
+}
+
+const char *portInputLayoutShown(s32 dev)
+{
+    return "";
+}
+
+s32 portInputLayoutInUse(s32 dev)
+{
+    return -1;
+}
+
+s32 portInputDeviceModeRaw(s32 dev)
+{
+    return 0;
+}
+
+void portVideoBindsResetDefaults(void)
+{
+}
+
+s32 portInputPadResetDefaults(s32 dev)
+{
+    return 0;
+}
