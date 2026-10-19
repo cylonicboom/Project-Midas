@@ -74,14 +74,14 @@ Jump to Routine:
 00000009	pppppppp
 [p]ointer to another animation routine where processing resumes
 */
-#define MONJUMPTO(p) 0x9, p
+#define MONJUMPTO(p) 0x9, (uintptr_t)(p)
 /*
 Jump on Chance:
 0000000A	pppppppp	0000xxxx
 [p]ointer to another animation routine where processing resumes
 [x] value to test against a random value.  Jump if rand < xxxx
 */
-#define MONJUMPCHANCE(p,x) 0xA, p, x
+#define MONJUMPCHANCE(p,x) 0xA, (uintptr_t)(p), x
 /*
 Loop:
 0000000B
@@ -186,38 +186,38 @@ struct roomproplistblock
 
 extern struct SetupPtrs g_SetupPtrs;
 
-extern u32 monAnimRadarSub1[];
-extern u32 monAnimRadarSub2[];
-extern u32 monAnimRadarSub3[];
-extern u32 monAnim0BRadar[];
-extern u32 monAnim0CSpinningCube[];
-extern u32 monAnim17RandImageEffect[];
-extern u32 monRandEffectChanceSHUTTLE1[];
-extern u32 monRandEffectChanceSHUTTLE2[];
-extern u32 monRandEffectChanceEARTHFULL1[];
-extern u32 monRandEffectChanceEARTHFULL2[];
-extern u32 monRandEffectChanceBLUESTARS[];
-extern u32 monRandEffectChanceGALAXY1[];
-extern u32 monRandEffectChanceGALAXY2[];
-extern u32 monRandEffectChanceEARTHTEXT[];
-extern u32 monRandEffectChanceTARGETEARTH[];
-extern u32 monRandEffectChanceGALAXY3[];
-extern u32 monRandChanceScrollOrZoomRandRGBN[];
+extern uintptr_t monAnimRadarSub1[];
+extern uintptr_t monAnimRadarSub2[];
+extern uintptr_t monAnimRadarSub3[];
+extern uintptr_t monAnim0BRadar[];
+extern uintptr_t monAnim0CSpinningCube[];
+extern uintptr_t monAnim17RandImageEffect[];
+extern uintptr_t monRandEffectChanceSHUTTLE1[];
+extern uintptr_t monRandEffectChanceSHUTTLE2[];
+extern uintptr_t monRandEffectChanceEARTHFULL1[];
+extern uintptr_t monRandEffectChanceEARTHFULL2[];
+extern uintptr_t monRandEffectChanceBLUESTARS[];
+extern uintptr_t monRandEffectChanceGALAXY1[];
+extern uintptr_t monRandEffectChanceGALAXY2[];
+extern uintptr_t monRandEffectChanceEARTHTEXT[];
+extern uintptr_t monRandEffectChanceTARGETEARTH[];
+extern uintptr_t monRandEffectChanceGALAXY3[];
+extern uintptr_t monRandChanceScrollOrZoomRandRGBN[];
 extern u32 D_80031B10[];
-extern u32 monRandChanceScrollOrZoomRed[];
-extern u32 monRandChanceScrollOrZoomGreen[];
-extern u32 monRandChanceScrollOrZoomBlue[];
-extern u32 monRandChanceScrollOrZoom[];
-extern u32 monAnim27RandomEffectScrollRight[];
-extern u32 monAnim28RandomEffectScrollUpFast[];
-extern u32 monAnim29RandomEffectScrollUp[];
-extern u32 monAnim2ARandEffectScrollZoom1[];
-extern u32 monAnim2ARandEffectScrollZoom2[];
-extern u32 monAnim2CRandEffectWaitRoute[];
-extern u32 monAnim2DRandEffectFlash[];
-extern u32 monAnim00Bond[];
-extern u32 monAnim34[];
-extern u32 monAnim35Taser[];
+extern uintptr_t monRandChanceScrollOrZoomRed[];
+extern uintptr_t monRandChanceScrollOrZoomGreen[];
+extern uintptr_t monRandChanceScrollOrZoomBlue[];
+extern uintptr_t monRandChanceScrollOrZoom[];
+extern uintptr_t monAnim27RandomEffectScrollRight[];
+extern uintptr_t monAnim28RandomEffectScrollUpFast[];
+extern uintptr_t monAnim29RandomEffectScrollUp[];
+extern uintptr_t monAnim2ARandEffectScrollZoom1[];
+extern uintptr_t monAnim2ARandEffectScrollZoom2[];
+extern uintptr_t monAnim2CRandEffectWaitRoute[];
+extern uintptr_t monAnim2DRandEffectFlash[];
+extern uintptr_t monAnim00Bond[];
+extern uintptr_t monAnim34[];
+extern uintptr_t monAnim35Taser[];
 extern WeaponObjRecord* proxy_mine_table[30];
 extern f32 gasTimeToFullOpacity;
 extern u32 gasDoesDamageFlag;

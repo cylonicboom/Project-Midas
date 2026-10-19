@@ -3235,7 +3235,7 @@ typedef union
     //[This struct uses original names]
     typedef struct MonitorRecord
     {
-        u32 *cmdlist;   // 0x80	4	image pointer for this monitor
+        uintptr_t *cmdlist; // 0x80	4	image pointer for this monitor (script words are pointer-sized)
         u16 offset;     // 0x84	2	[runtime] cur. #commands from start of routine
         s16 pause60;    // 0x86	2	[runtime] loop counter
         struct sImageTableEntry *tconfig;      //0x88	4	[runtime] monitor image# or p->image header
