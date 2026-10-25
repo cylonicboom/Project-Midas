@@ -24,7 +24,12 @@ struct bondstruct_unk_animation_related D_80029D60 = {
     &animations_frame_buffer
 };
 
+#ifdef TARGET_N64
 s32 animation_table_ptrs1[] = {
+#else
+/* pointer-sized: expand_ani_table_entries turns these offsets into pointers */
+uintptr_t animation_table_ptrs1[] = {
+#endif
     PTR_ANIM_idle,
     PTR_ANIM_fire_standing,
     PTR_ANIM_fire_standing_fast,
@@ -230,6 +235,23 @@ struct anim_entry
     s32 unk10;
 };
 
+#ifndef TARGET_N64
+/* PC: the tables hold offsets into the animation data segment until here and
+ * become pointers. The headers' own offsets (address, bitDescriptors,
+ * bitStream) stay offsets and model.c resolves them where it reads them: an
+ * N64 header has 4-byte slots, and headers are used in place, addressed by
+ * segment offset all over the game. */
+void expand_ani_table_entries(uintptr_t *entry)
+{
+    for (; *entry != 0; entry++)
+    {
+        if (*entry != 1)
+        {
+            *entry += (uintptr_t)&ptr_animation_table->data;
+        }
+    }
+}
+#else
 void expand_ani_table_entries(s32** arg0)
 {
     s32** var_v0;
@@ -250,6 +272,7 @@ void expand_ani_table_entries(s32** arg0)
         }
     }
 }
+#endif
 
 void alloc_load_expand_ani_table(void)
 {
@@ -263,6 +286,11 @@ void alloc_load_expand_ani_table(void)
     ptr_animation_table = mempAllocBytesInBank(animsDataSegmentSize, MEMPOOL_PERMANENT);
 
     romCopy(ptr_animation_table, &_animation_dataSegmentRomStart, animsDataSegmentSize);
+#ifdef TARGET_N64
     expand_ani_table_entries((s32*)&animation_table_ptrs1);
     expand_ani_table_entries((s32*)&animation_table_ptrs2);
+#else
+    expand_ani_table_entries(animation_table_ptrs1);
+    expand_ani_table_entries((uintptr_t *)animation_table_ptrs2);
+#endif
 }

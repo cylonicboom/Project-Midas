@@ -908,6 +908,10 @@ void sub_GAME_7F06D160(coord3d *arg0, coord3d *arg1, f32 mult)
 /**
  * Address: 7F06D1CC
  */
+#ifndef TARGET_N64
+#include "initanitable.h" /* ptr_animation_table: anim header offsets resolve against it */
+extern u8 _animation_entriesSegmentRomStart[];
+#endif
 u16 modelAnimReadRootMotionValue(ModelAnimation *anim, s32 fieldIndex, s32 extraBitOffset)
 {
     u32 result;
@@ -922,7 +926,11 @@ u16 modelAnimReadRootMotionValue(ModelAnimation *anim, s32 fieldIndex, s32 extra
     u8 bitsThisRead;
 
     result = 0;
+#ifdef TARGET_N64
     desc = anim->bitDescriptors + fieldIndex;
+#else
+    desc = (struct ModelAnimBitField *)&ptr_animation_table->data[anim->bitDescriptors] + fieldIndex;
+#endif
     bitsRemaining = desc->bitCount;
 
     if (bitsRemaining > 0)
@@ -930,7 +938,11 @@ u16 modelAnimReadRootMotionValue(ModelAnimation *anim, s32 fieldIndex, s32 extra
         totalBitOffset = extraBitOffset + desc->bitOffset;
         byteIndex = totalBitOffset >> 3;
         totalBitOffset &= 7;
+#ifdef TARGET_N64
         byteptr = anim->bitStream + byteIndex;
+#else
+        byteptr = &ptr_animation_table->data[anim->bitStream] + byteIndex;
+#endif
         bitsThisRead = 8 - totalBitOffset;
 
         if (bitsRemaining >= bitsThisRead)
@@ -5908,7 +5920,12 @@ s32 loadAnimationFrame(ModelAnimation* anim, s32 frame, ModelSkeleton* unused)
         size = ((u32) (frameSize + 15) >> 4) * 16;
 
         // This copies one animation frame from ROM to the destination in RAM
+#ifdef TARGET_N64
         romCopy((void* ) dest, (void* ) source, size);
+#else
+        // PC: anim->address is an offset into the entries segment (see expand_ani_table_entries)
+        romCopy((void* ) dest, (void* ) (_animation_entriesSegmentRomStart + source), size);
+#endif
 
         // Increment this which serves nothing
         D_80036414->uselessPointer += 1;

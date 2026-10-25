@@ -28,7 +28,11 @@ extern struct animation_table_data* ptr_animation_table;
  * The index of each value corresponds to `enum ANIMATION`.
  * The value corresponds to (e.g. index=0) PTR_ANIM_idle (same as ANIM_DATA_idle)
 */
+#ifdef TARGET_N64
 extern s32 animation_table_ptrs1[];
+#else
+extern uintptr_t animation_table_ptrs1[];
+#endif
 
 /**
  * Contains offsets into ptr_animation_table for object/vehicle animations.

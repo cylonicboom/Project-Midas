@@ -599,10 +599,19 @@ typedef union
         u16 unk04; // number of frames in the animation
         u8 unk06;
         u8 unk07; // bit 0 is a loop flag: 0 means freeze anim at end, 1 means loop anim
+#ifdef TARGET_N64
         ModelAnimBitField *bitDescriptors; // 0x08
         u16 unk0C;
         u16 unk0E;
         u8  *bitStream; // 0x10
+#else
+        // PC: offsets into ptr_animation_table->data, resolved in model.c, so
+        // the header is used in place at either pointer width
+        u32 bitDescriptors; // 0x08
+        u16 unk0C;
+        u16 unk0E;
+        u32 bitStream; // 0x10
+#endif
         s32 unk14;
         s32 unk18;
         s32 unk1c;
