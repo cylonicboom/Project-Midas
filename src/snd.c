@@ -1198,7 +1198,13 @@ ALSoundState *sndPlaySfx(struct ALBankAlt_s *soundBank, s16 soundIndex, ALSoundS
     {
         ALKeyMap *keyMap;
 
+#ifdef TARGET_N64
         sound = (soundBank->instArray[0]->soundArray[soundIndex]);
+#else
+        /* PC: the Alt view's 1-based [i] only lands on the real [i-1] while
+         * pointers are 4 bytes; index the real instrument directly */
+        sound = ((ALInstrument *)soundBank->instArray[0])->soundArray[soundIndex - 1];
+#endif
 
         newState = sndSetupSound(soundBank, sound);
 

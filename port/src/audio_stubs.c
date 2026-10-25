@@ -35,212 +35,439 @@
  * load/resample/env_wip/save/buses/reverb/drvrNew the filter chain.
  * port/src/audio_pc.c executes the emitted Acmd lists and feeds SDL.
  * The stubs that remain below are ONLY the compressed-MIDI sequencer
- * layer (music phase) and the BE-aware alBnkfNew. */
+ * layer (music phase) and the bank loader (portBnkfLoad, which replaces
+ * alBnkfNew on PC). */
 
 /* ==== bank file ========================================================== */
-
-/* ==== bank file (REAL, audio phase 1) ==================================== */
 /*
- * The _sfxctl/_instrumentsctl segments now carry the REAL SGI .ctl images
- * (byte-exact BIG-ENDIAN, revision 'B1'; see port/src/segments.c). This is
- * bnkf.c's patch walk with the BE->native field conversion folded in: on
- * N64 native IS big-endian so SGI reads fields directly; on PC every
- * multibyte field must be swapped exactly once, then offsets promoted to
- * host pointers (i686 build: 4-byte pointers overwrite 4-byte offsets in
- * place, same as N64).
+ * portBnkfLoad builds host-layout bank structs from the big-endian SGI .ctl
+ * image the ROM serves (revision 'B1'). bnkf.c on N64 patches the image in
+ * place, turning 4-byte offsets into 4-byte pointers; that only holds while a
+ * pointer is 4 bytes, so PC reads the image and writes fresh structs instead,
+ * the same code at either width. Shape follows the PD port's
+ * port/src/preprocess/segaudio.c from its 64-bit lift.
  *
- * Guards against double work: bank/instrument/sound/wavetable records
- * carry a flags byte (SGI's own revisit guard, reused). Envelopes, ADPCM
- * books and loop records have NO flags field and CAN be shared, so their
- * content-swap is tracked in a visited set; the pointer fields referencing
- * them are per-parent and always patched.
+ * .ctl layout (offsets from the file start, all big-endian):
+ *   bankfile   s16 revision, s16 bankCount, u32 bank[]
+ *   bank       s16 instCount, u8 flags, u8 pad, s32 rate, u32 percussion, u32 inst[]
+ *   instrument 12 x u8, s16 bendRange, s16 soundCount, u32 sound[]
+ *   sound      u32 envelope, u32 keymap, u32 wavetable, u8 pan, u8 vol, u8 flags
+ *   wavetable  u32 base (.tbl offset), s32 len, u8 type, u8 flags, u32 loop, u32 book
+ *   envelope   s32 attack, s32 decay, s32 release, u8 attackVol, u8 decayVol
+ *   keymap     6 x u8
+ *   adpcm loop u32 start, u32 end, u32 count, s16 state[16]
+ *   adpcm book s32 order, s32 npredictors, s16 book[order * npredictors * 8]
+ *   raw loop   u32 start, u32 end, u32 count
  *
- * Format verified against assets/music/sfx.ctl before writing this:
- * revision B1, bankCount 1, bank @0x5BA0 {instCount 1, sampleRate 22050,
- * instArray[0]=0x5778}, instrument {vol 7F, pan 40, bendRange 200,
- * soundCount 261, soundArray at +16} - STANDARD layout (GE's snd.h "Alt"
- * view reads soundArray at +12 with 1-based sfx indices; the addresses
- * coincide, so both views work off this patch).
+ * Records can be shared between parents, so each .ctl offset is converted
+ * once and later references reuse the host copy. bank / instrument / sound /
+ * wavetable flags are set to 1 as SGI's walk does (its revisit guard), and a
+ * zero bank or instrument entry points at the file as it did before. RAW16
+ * samples in the .tbl are swapped to native s16 once per wave (the mixer
+ * plays native samples; ADPCM decodes bytes). The host image is never freed:
+ * banks live for the whole run.
  */
+#include <stdio.h>
+#include <stdlib.h>
 
-static u16 portBSwap16(u16 v)
+extern void portConLogf(const char *fmt, ...);
+
+#define BNKF_SEEN_MAX 8192
+
+static struct { u32 src; void *host; } s_bnkfSeen[BNKF_SEEN_MAX];
+static s32 s_bnkfSeenCount;
+static const void *s_bnkfWaveSeen[BNKF_SEEN_MAX];
+static s32 s_bnkfWaveSeenCount;
+
+static const u8 *s_bnkfSrc;
+static u32 s_bnkfSrcSize;
+static u8 *s_bnkfDst;
+static u32 s_bnkfDstPos;
+static u32 s_bnkfDstSize;
+static u8 *s_bnkfTable;
+static ALBankFile *s_bnkfFile;
+static s32 s_bnkfNullRefs;
+
+static u16 portBnkfBe16(const u8 *p)
 {
-    return (u16)((v >> 8) | (v << 8));
+    return (u16)((p[0] << 8) | p[1]);
 }
 
-static u32 portBSwap32(u32 v)
+static u32 portBnkfBe32(const u8 *p)
 {
-    return (v >> 24) | ((v >> 8) & 0xFF00u) | ((v & 0xFF00u) << 8) | (v << 24);
+    return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | p[3];
 }
 
-#define BNKF_VISIT_MAX 4096
+static void portBnkfFail(const char *what, u32 off)
+{
+    portConLogf("ge: bnkf: %s at .ctl offset 0x%x - the audio bank cannot be loaded\n", what, off);
+    exit(1);
+}
 
-static const void *s_bnkfVisited[BNKF_VISIT_MAX];
-static s32 s_bnkfVisitedCount;
+/* the source record at `off`, bounds-checked */
+static const u8 *portBnkfAt(u32 off, u32 size)
+{
+    if (off > s_bnkfSrcSize || size > s_bnkfSrcSize - off) {
+        portBnkfFail("record runs past the end of the file", off);
+    }
+    return s_bnkfSrc + off;
+}
 
-/* returns 1 the first time ptr is seen, 0 after */
-static s32 portBnkfVisit(const void *ptr)
+/* the next host record, aligned for the pointers it holds */
+static void *portBnkfAlloc(u32 size)
+{
+    void *p;
+
+    s_bnkfDstPos = (s_bnkfDstPos + 7u) & ~7u;
+    if (size > s_bnkfDstSize - s_bnkfDstPos) {
+        portBnkfFail("host image too small", s_bnkfDstPos);
+    }
+    p = s_bnkfDst + s_bnkfDstPos;
+    s_bnkfDstPos += size;
+    return p;
+}
+
+static void *portBnkfSeen(u32 off)
 {
     s32 i;
 
-    for (i = 0; i < s_bnkfVisitedCount; i++) {
-        if (s_bnkfVisited[i] == ptr) {
-            return 0;
+    for (i = 0; i < s_bnkfSeenCount; i++) {
+        if (s_bnkfSeen[i].src == off) {
+            return s_bnkfSeen[i].host;
         }
     }
-    if (s_bnkfVisitedCount < BNKF_VISIT_MAX) {
-        s_bnkfVisited[s_bnkfVisitedCount++] = ptr;
-    }
-    return 1;
+    return NULL;
 }
 
-static void portBnkfPatchSound(ALSound *s, uintptr_t base, uintptr_t table)
+static void portBnkfRemember(u32 off, void *host)
 {
+    if (s_bnkfSeenCount >= BNKF_SEEN_MAX) {
+        portBnkfFail("more records than BNKF_SEEN_MAX", off);
+    }
+    s_bnkfSeen[s_bnkfSeenCount].src = off;
+    s_bnkfSeen[s_bnkfSeenCount].host = host;
+    s_bnkfSeenCount++;
+}
+
+/* elements past the [1] a variable-length struct already declares */
+static u32 portBnkfExtra(s32 count, u32 elemsize)
+{
+    return count > 1 ? (u32)(count - 1) * elemsize : 0;
+}
+
+static ALEnvelope *portBnkfEnvelope(u32 off)
+{
+    const u8 *s;
+    ALEnvelope *e;
+
+    if (off == 0) {
+        s_bnkfNullRefs++;
+        return NULL;
+    }
+    if ((e = portBnkfSeen(off)) != NULL) {
+        return e;
+    }
+    s = portBnkfAt(off, 14);
+    e = portBnkfAlloc(sizeof(ALEnvelope));
+    portBnkfRemember(off, e);
+    e->attackTime = (s32)portBnkfBe32(s + 0);
+    e->decayTime = (s32)portBnkfBe32(s + 4);
+    e->releaseTime = (s32)portBnkfBe32(s + 8);
+    e->attackVolume = s[12];
+    e->decayVolume = s[13];
+    return e;
+}
+
+static ALKeyMap *portBnkfKeyMap(u32 off)
+{
+    const u8 *s;
+    ALKeyMap *k;
+
+    if (off == 0) {
+        s_bnkfNullRefs++;
+        return NULL;
+    }
+    if ((k = portBnkfSeen(off)) != NULL) {
+        return k;
+    }
+    s = portBnkfAt(off, 6);
+    k = portBnkfAlloc(sizeof(ALKeyMap));
+    portBnkfRemember(off, k);
+    k->velocityMin = s[0];
+    k->velocityMax = s[1];
+    k->keyMin = s[2];
+    k->keyMax = s[3];
+    k->keyBase = s[4];
+    k->detune = (s8)s[5];
+    return k;
+}
+
+static ALADPCMloop *portBnkfAdpcmLoop(u32 off)
+{
+    const u8 *s;
+    ALADPCMloop *l;
+    s32 n;
+
+    if ((l = portBnkfSeen(off)) != NULL) {
+        return l;
+    }
+    s = portBnkfAt(off, 12 + 16 * 2);
+    l = portBnkfAlloc(sizeof(ALADPCMloop));
+    portBnkfRemember(off, l);
+    l->start = portBnkfBe32(s + 0);
+    l->end = portBnkfBe32(s + 4);
+    l->count = portBnkfBe32(s + 8);
+    for (n = 0; n < 16; n++) {
+        ((s16 *)l->state)[n] = (s16)portBnkfBe16(s + 12 + n * 2);
+    }
+    return l;
+}
+
+static ALADPCMBook *portBnkfAdpcmBook(u32 off)
+{
+    const u8 *s;
+    ALADPCMBook *b;
+    s32 order, npred, n, ncoef;
+
+    if ((b = portBnkfSeen(off)) != NULL) {
+        return b;
+    }
+    s = portBnkfAt(off, 8);
+    order = (s32)portBnkfBe32(s + 0);
+    npred = (s32)portBnkfBe32(s + 4);
+    if (order < 0 || npred < 0 || order > 16 || npred > 16) {
+        portBnkfFail("implausible ADPCM book size", off);
+    }
+    ncoef = order * npred * 8;
+    s = portBnkfAt(off, 8 + (u32)ncoef * 2);
+    b = portBnkfAlloc(sizeof(ALADPCMBook) + portBnkfExtra(ncoef, sizeof(s16)));
+    portBnkfRemember(off, b);
+    b->order = order;
+    b->npredictors = npred;
+    for (n = 0; n < ncoef; n++) {
+        b->book[n] = (s16)portBnkfBe16(s + 8 + n * 2);
+    }
+    return b;
+}
+
+static ALRawLoop *portBnkfRawLoop(u32 off)
+{
+    const u8 *s;
+    ALRawLoop *l;
+
+    if ((l = portBnkfSeen(off)) != NULL) {
+        return l;
+    }
+    s = portBnkfAt(off, 12);
+    l = portBnkfAlloc(sizeof(ALRawLoop));
+    portBnkfRemember(off, l);
+    l->start = portBnkfBe32(s + 0);
+    l->end = portBnkfBe32(s + 4);
+    l->count = portBnkfBe32(s + 8);
+    return l;
+}
+
+/* RAW16 sample data: big-endian in the .tbl, native for the mixer; swap once */
+static void portBnkfSwapRawSamples(ALWaveTable *w)
+{
+    s16 *smp = (s16 *)w->base;
+    s32 ns = w->len >> 1;
+    s32 i;
+
+    for (i = 0; i < s_bnkfWaveSeenCount; i++) {
+        if (s_bnkfWaveSeen[i] == w->base) {
+            return;
+        }
+    }
+    if (s_bnkfWaveSeenCount < BNKF_SEEN_MAX) {
+        s_bnkfWaveSeen[s_bnkfWaveSeenCount++] = w->base;
+    }
+    for (i = 0; i < ns; i++) {
+        u16 v = (u16)smp[i];
+        smp[i] = (s16)((v >> 8) | (v << 8));
+    }
+}
+
+static ALWaveTable *portBnkfWaveTable(u32 off)
+{
+    const u8 *s;
     ALWaveTable *w;
+    u32 loop, book;
 
-    if (s->flags) {
-        return;
+    if (off == 0) {
+        s_bnkfNullRefs++;
+        return NULL;
     }
-    s->flags = 1;
-
-    s->envelope = (ALEnvelope *)(base + portBSwap32((u32)s->envelope));
-    if (portBnkfVisit(s->envelope)) {
-        s->envelope->attackTime = (s32)portBSwap32((u32)s->envelope->attackTime);
-        s->envelope->decayTime = (s32)portBSwap32((u32)s->envelope->decayTime);
-        s->envelope->releaseTime = (s32)portBSwap32((u32)s->envelope->releaseTime);
+    if ((w = portBnkfSeen(off)) != NULL) {
+        return w;
     }
+    s = portBnkfAt(off, 20);
+    w = portBnkfAlloc(sizeof(ALWaveTable));
+    portBnkfRemember(off, w);
+    w->base = s_bnkfTable + portBnkfBe32(s + 0);
+    w->len = (s32)portBnkfBe32(s + 4);
+    w->type = s[8];
+    w->flags = 1;
+    loop = portBnkfBe32(s + 12);
+    book = portBnkfBe32(s + 16);
 
-    /* keymap fields are all bytes - promote the pointer, nothing to swap */
-    s->keyMap = (ALKeyMap *)(base + portBSwap32((u32)s->keyMap));
-
-    s->wavetable = (ALWaveTable *)(base + portBSwap32((u32)s->wavetable));
-    w = s->wavetable;
-    if (!w->flags) {
-        w->flags = 1;
-        w->base = (u8 *)(table + portBSwap32((u32)w->base));
-        w->len = (s32)portBSwap32((u32)w->len);
-
-        if (w->type == AL_ADPCM_WAVE) {
-            if (w->waveInfo.adpcmWave.book != NULL) {
-                ALADPCMBook *book = (ALADPCMBook *)(base + portBSwap32((u32)w->waveInfo.adpcmWave.book));
-
-                w->waveInfo.adpcmWave.book = book;
-                if (portBnkfVisit(book)) {
-                    s32 n;
-
-                    book->order = (s32)portBSwap32((u32)book->order);
-                    book->npredictors = (s32)portBSwap32((u32)book->npredictors);
-                    for (n = 0; n < book->order * book->npredictors * 8; n++) {
-                        book->book[n] = (s16)portBSwap16((u16)book->book[n]);
-                    }
-                }
-            }
-            if (w->waveInfo.adpcmWave.loop != NULL) {
-                ALADPCMloop *loop = (ALADPCMloop *)(base + portBSwap32((u32)w->waveInfo.adpcmWave.loop));
-
-                w->waveInfo.adpcmWave.loop = loop;
-                if (portBnkfVisit(loop)) {
-                    s32 n;
-
-                    loop->start = portBSwap32(loop->start);
-                    loop->end = portBSwap32(loop->end);
-                    loop->count = portBSwap32(loop->count);
-                    for (n = 0; n < 16; n++) {
-                        ((s16 *)loop->state)[n] = (s16)portBSwap16((u16)((s16 *)loop->state)[n]);
-                    }
-                }
-            }
-        } else if (w->type == AL_RAW16_WAVE) {
-            if (w->waveInfo.rawWave.loop != NULL) {
-                ALRawLoop *loop = (ALRawLoop *)(base + portBSwap32((u32)w->waveInfo.rawWave.loop));
-
-                w->waveInfo.rawWave.loop = loop;
-                if (portBnkfVisit(loop)) {
-                    loop->start = portBSwap32(loop->start);
-                    loop->end = portBSwap32(loop->end);
-                    loop->count = portBSwap32(loop->count);
-                }
-            }
-
-            /* RAW16 samples are big-endian s16 in the .tbl but the mixer
-             * plays native s16, so swap them once (visited-guarded). ADPCM
-             * decodes bytes and needs no swap. */
-            if (portBnkfVisit(w->base)) {
-                s16 *smp = (s16 *)w->base;
-                s32 ns = w->len >> 1;
-                s32 k;
-
-                for (k = 0; k < ns; k++) {
-                    smp[k] = (s16)portBSwap16((u16)smp[k]);
-                }
-            }
-        }
+    if (w->type == AL_ADPCM_WAVE) {
+        w->waveInfo.adpcmWave.loop = loop ? portBnkfAdpcmLoop(loop) : NULL;
+        w->waveInfo.adpcmWave.book = book ? portBnkfAdpcmBook(book) : NULL;
+    } else if (w->type == AL_RAW16_WAVE) {
+        w->waveInfo.rawWave.loop = loop ? portBnkfRawLoop(loop) : NULL;
+        portBnkfSwapRawSamples(w);
     }
+    return w;
 }
 
-static void portBnkfPatchInst(ALInstrument *inst, uintptr_t base, uintptr_t table)
+static ALSound *portBnkfSound(u32 off)
 {
+    const u8 *s;
+    ALSound *snd;
+
+    if (off == 0) {
+        s_bnkfNullRefs++;
+        return NULL;
+    }
+    if ((snd = portBnkfSeen(off)) != NULL) {
+        return snd;
+    }
+    s = portBnkfAt(off, 15);
+    snd = portBnkfAlloc(sizeof(ALSound));
+    portBnkfRemember(off, snd);
+    snd->envelope = portBnkfEnvelope(portBnkfBe32(s + 0));
+    snd->keyMap = portBnkfKeyMap(portBnkfBe32(s + 4));
+    snd->wavetable = portBnkfWaveTable(portBnkfBe32(s + 8));
+    snd->samplePan = s[12];
+    snd->sampleVolume = s[13];
+    snd->flags = 1;
+    return snd;
+}
+
+static ALInstrument *portBnkfInstrument(u32 off)
+{
+    const u8 *s;
+    ALInstrument *inst;
+    s16 n;
     s32 i;
 
-    if (inst->flags) {
-        return;
+    if (off == 0) {
+        return (ALInstrument *)s_bnkfFile;
     }
+    if ((inst = portBnkfSeen(off)) != NULL) {
+        return inst;
+    }
+    s = portBnkfAt(off, 16);
+    n = (s16)portBnkfBe16(s + 14);
+    if (n < 0) {
+        portBnkfFail("negative sound count", off);
+    }
+    s = portBnkfAt(off, 16 + (u32)n * 4);
+    inst = portBnkfAlloc(sizeof(ALInstrument) + portBnkfExtra(n, sizeof(ALSound *)));
+    portBnkfRemember(off, inst);
+    inst->volume = s[0];
+    inst->pan = s[1];
+    inst->priority = s[2];
     inst->flags = 1;
-
-    inst->bendRange = (s16)portBSwap16((u16)inst->bendRange);
-    inst->soundCount = (s16)portBSwap16((u16)inst->soundCount);
-
-    for (i = 0; i < inst->soundCount; i++) {
-        inst->soundArray[i] = (ALSound *)(base + portBSwap32((u32)inst->soundArray[i]));
-        portBnkfPatchSound(inst->soundArray[i], base, table);
+    inst->tremType = s[4];
+    inst->tremRate = s[5];
+    inst->tremDepth = s[6];
+    inst->tremDelay = s[7];
+    inst->vibType = s[8];
+    inst->vibRate = s[9];
+    inst->vibDepth = s[10];
+    inst->vibDelay = s[11];
+    inst->bendRange = (s16)portBnkfBe16(s + 12);
+    inst->soundCount = n;
+    for (i = 0; i < n; i++) {
+        inst->soundArray[i] = portBnkfSound(portBnkfBe32(s + 16 + i * 4));
     }
+    return inst;
 }
 
-static void portBnkfPatchBank(ALBank *bank, uintptr_t base, uintptr_t table)
+static ALBank *portBnkfBank(u32 off)
 {
+    const u8 *s;
+    ALBank *b;
+    s16 n;
     s32 i;
+    u32 perc;
 
-    if (bank->flags) {
-        return;
+    if (off == 0) {
+        return (ALBank *)s_bnkfFile;
     }
-    bank->flags = 1;
-
-    bank->instCount = (s16)portBSwap16((u16)bank->instCount);
-    bank->sampleRate = (s32)portBSwap32((u32)bank->sampleRate);
-
-    if (bank->percussion != NULL) {
-        bank->percussion = (ALInstrument *)(base + portBSwap32((u32)bank->percussion));
-        portBnkfPatchInst(bank->percussion, base, table);
+    if ((b = portBnkfSeen(off)) != NULL) {
+        return b;
     }
-
-    for (i = 0; i < bank->instCount; i++) {
-        bank->instArray[i] = (ALInstrument *)(base + portBSwap32((u32)bank->instArray[i]));
-        if (bank->instArray[i] != (ALInstrument *)base) {
-            portBnkfPatchInst(bank->instArray[i], base, table);
-        }
+    s = portBnkfAt(off, 12);
+    n = (s16)portBnkfBe16(s + 0);
+    if (n < 0) {
+        portBnkfFail("negative instrument count", off);
     }
+    s = portBnkfAt(off, 12 + (u32)n * 4);
+    b = portBnkfAlloc(sizeof(ALBank) + portBnkfExtra(n, sizeof(ALInstrument *)));
+    portBnkfRemember(off, b);
+    b->instCount = n;
+    b->flags = 1;
+    b->pad = s[3];
+    b->sampleRate = (s32)portBnkfBe32(s + 4);
+    perc = portBnkfBe32(s + 8);
+    b->percussion = perc ? portBnkfInstrument(perc) : NULL;
+    for (i = 0; i < n; i++) {
+        b->instArray[i] = portBnkfInstrument(portBnkfBe32(s + 12 + i * 4));
+    }
+    return b;
 }
 
-void alBnkfNew(ALBankFile *f, u8 *table)
+/**
+ * Build a host ALBankFile from the big-endian .ctl image at `ctl` (`size`
+ * bytes, read-only), with wave bases resolved against `table` (the .tbl).
+ * Replaces romCopy + alBnkfNew on PC (src/music.c).
+ */
+ALBankFile *portBnkfLoad(const void *ctl, u32 size, u8 *table)
 {
-    uintptr_t base = (uintptr_t)f;
+    const u8 *s = ctl;
+    ALBankFile *f;
+    s16 count;
     s32 i;
 
-    s_bnkfVisitedCount = 0;
-
-    f->revision = (s16)portBSwap16((u16)f->revision);
-    if (f->revision != AL_BANK_VERSION) {
-        /* not a BE ctl image (or already patched) - leave it alone */
-        return;
+    if (size < 4 || portBnkfBe16(s) != AL_BANK_VERSION) {
+        portConLogf("ge: bnkf: not a big-endian B1 bank file (%u bytes) - the audio bank cannot be loaded\n", size);
+        exit(1);
     }
-    f->bankCount = (s16)portBSwap16((u16)f->bankCount);
 
-    for (i = 0; i < f->bankCount; i++) {
-        f->bankArray[i] = (ALBank *)(base + portBSwap32((u32)f->bankArray[i]));
-        if (f->bankArray[i] != (ALBank *)base) {
-            portBnkfPatchBank(f->bankArray[i], base, (uintptr_t)table);
-        }
+    s_bnkfSrc = s;
+    s_bnkfSrcSize = size;
+    s_bnkfTable = table;
+    s_bnkfSeenCount = 0;
+    s_bnkfWaveSeenCount = 0;
+    s_bnkfNullRefs = 0;
+    /* 8-byte pointers over 4-byte offsets, plus alignment: under 3x in
+     * practice, and portBnkfAlloc stops loudly if a bank ever needs more */
+    s_bnkfDstSize = size * 4;
+    s_bnkfDstPos = 0;
+    s_bnkfDst = calloc(1, s_bnkfDstSize);
+    if (s_bnkfDst == NULL) {
+        portBnkfFail("out of memory", 0);
     }
+
+    count = (s16)portBnkfBe16(s + 2);
+    if (count < 1) {
+        portBnkfFail("no banks", 2);
+    }
+    portBnkfAt(0, 4 + (u32)count * 4);
+    f = portBnkfAlloc(sizeof(ALBankFile) + portBnkfExtra(count, sizeof(ALBank *)));
+    s_bnkfFile = f;
+    f->revision = AL_BANK_VERSION;
+    f->bankCount = count;
+    for (i = 0; i < count; i++) {
+        f->bankArray[i] = portBnkfBank(portBnkfBe32(s + 4 + i * 4));
+    }
+
+    portConLogf("ge: bnkf: %u-byte .ctl -> %u bytes host, %d records%s\n",
+            size, s_bnkfDstPos, s_bnkfSeenCount,
+            s_bnkfNullRefs ? " (some zero references left NULL)" : "");
 
     { /* bring-up (GE_DUMP_BOND): prove the parse - bank/inst/sound shape */
         extern void ge_dbg_vec(const char *tag, const float *v, int n);
@@ -256,6 +483,8 @@ void alBnkfNew(ALBankFile *f, u8 *table)
         v[6] = (float)(uintptr_t)bank->instArray[0]->soundArray[0]->wavetable->base;
         ge_dbg_vec("bnkf banks/insts/rate/sounds/wt0type/len/base", v, 7);
     }
+
+    return f;
 }
 
 /* ==== compressed-midi seq / seq player =================================== */

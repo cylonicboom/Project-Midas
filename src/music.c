@@ -776,9 +776,14 @@ void musicSeqPlayerInit(void)
     {
         size = (u32)&_sfxtblSegmentRomStart - (u32)&_sfxctlSegmentRomStart;
 
+#ifdef TARGET_N64
         sfxBank = alHeapAlloc(&g_musicHeap, 1, size);
         romCopy(sfxBank, &_sfxctlSegmentRomStart, size);
         alBnkfNew(sfxBank, (u8 *)&_sfxtblSegmentRomStart);
+#else
+        /* PC: host-layout structs built from the BE .ctl (port/src/audio_stubs.c) */
+        sfxBank = portBnkfLoad(&_sfxctlSegmentRomStart, size, (u8 *)&_sfxtblSegmentRomStart);
+#endif
         g_musicSfxBufferPtr = sfxBank->bankArray[0];
     }
 
@@ -786,9 +791,13 @@ void musicSeqPlayerInit(void)
     {
         size = (u32)&_instrumentstblSegmentRomStart - (u32)&_instrumentsctlSegmentRomStart;
 
+#ifdef TARGET_N64
         instrumentBank = alHeapAlloc(&g_musicHeap, 1, size);
         romCopy(instrumentBank, &_instrumentsctlSegmentRomStart, size);
         alBnkfNew(instrumentBank, (u8 *)&_instrumentstblSegmentRomStart);
+#else
+        instrumentBank = portBnkfLoad(&_instrumentsctlSegmentRomStart, size, (u8 *)&_instrumentstblSegmentRomStart);
+#endif
         g_musicInstrumentBufferPtr = instrumentBank->bankArray[0];
     }
 

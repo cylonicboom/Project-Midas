@@ -267,6 +267,10 @@ typedef struct {                /* Note: sizeof won't be correct        */
 } ALBankFile;
 
 void    alBnkfNew(ALBankFile *f, u8 *table);
+#ifndef TARGET_N64
+/* PC: replaces romCopy + alBnkfNew (port/src/audio_stubs.c) */
+ALBankFile *portBnkfLoad(const void *ctl, u32 size, u8 *table);
+#endif
 
 /***********************************************************************
  * Sequence Files
