@@ -28,12 +28,12 @@ s32 g_gfxDebugEntryData = 0;
 /**
  * Address 8004E9E4.
  */
-s32 g_gfxRdpOutputBufferEnd = 0;
+uintptr_t g_gfxRdpOutputBufferEnd = 0;
 
 /**
  * Address 8004E9E8.
  */
-s32 g_gfxRdpOutputBufferStart = 0;
+uintptr_t g_gfxRdpOutputBufferStart = 0;
 
 /**
  * Address 8004E9EC.
@@ -215,7 +215,7 @@ void rspInit(void)
 
 void rspAllocateBuffers(void)
 {
-    g_gfxRdpOutputBufferStart = mempAllocBytesInBank(RSP_MEMP_ALLOC_SIZE_BYTES, MEMPOOL_PERMANENT);
+    g_gfxRdpOutputBufferStart = (uintptr_t)mempAllocBytesInBank(RSP_MEMP_ALLOC_SIZE_BYTES, MEMPOOL_PERMANENT);
     g_gfxRdpOutputBufferEnd = g_gfxRdpOutputBufferStart + RSP_MEMP_ALLOC_SIZE_BYTES;
 }
 
@@ -283,6 +283,6 @@ void rspGfxTaskStart(Gfx *firstGdl, Gfx *gdl, s32 arg2, OSMesg rspReplyMsg)
     // Toggles the g_gfxTaskSettingsList to point to altnerate tasks.
     // Depends on first assignment taking place (g_gfxTaskSettingsList = g_gfxTaskSettings[0]).
     // Not a typo, but probably not best practice.
-    g_gfxTaskSettingsList = (struct GfxInfo_s *)((u32)g_gfxTaskSettingsList ^ (u32) &g_gfxTaskSettings[0] ^ (u32) &g_gfxTaskSettings[1]);
+    g_gfxTaskSettingsList = (struct GfxInfo_s *)((uintptr_t)g_gfxTaskSettingsList ^ (uintptr_t) &g_gfxTaskSettings[0] ^ (uintptr_t) &g_gfxTaskSettings[1]);
 }
 

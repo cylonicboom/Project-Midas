@@ -14,7 +14,7 @@
  */ 
 struct GfxInfo_s {
     OSScTask task;
-    u32 cfb;
+    uintptr_t cfb; /* framebuffer address */
     u32 unk5C;
 };
 
