@@ -2589,7 +2589,7 @@ void texLoad(s32 *updateword, struct texpool *pool)
         {
             // Copy the compressed texture to RAM
             romCopy(alignedcompbuffer,
-                    (u32) &_imagesSegmentRomStart + (thisoffset & 0xfffffff8),
+                    (uintptr_t) &_imagesSegmentRomStart + (thisoffset & 0xfffffff8),
                     ((u32) (nextoffset - thisoffset) + 0x1f) >> 4 << 4);
 #ifndef TARGET_N64
             { /* tickhz=hw load hitch: the texture's cart read; its decode is priced

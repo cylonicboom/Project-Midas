@@ -500,7 +500,7 @@ void sub_GAME_7F008DE4(u8 **addr, s32 *size) {
     *size -= 0x40400;
     *addr += 0x40400;
     dword_CODE_bss_80069588 = *addr;
-    romCopy(dword_CODE_bss_80069588, (void *)(s32)&unknown2, ALIGN64_V2(((u32)&unknown2_end - (u32)&unknown2)));
+    romCopy(dword_CODE_bss_80069588, (void *)(uintptr_t)&unknown2, ALIGN64_V2(((u32)&unknown2_end - (u32)&unknown2)));
     rle_expand_8bit(dword_CODE_bss_80069588, dword_CODE_bss_8006958C);
 }
 

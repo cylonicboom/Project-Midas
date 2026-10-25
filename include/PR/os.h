@@ -159,7 +159,7 @@ typedef struct {
 typedef struct {
 	OSIoMesgHdr	hdr;		/* Message header */
 	void *		dramAddr;	/* RDRAM buffer address (DMA) */
-	u32		devAddr;	/* Device buffer address (DMA) */
+	uintptr_t	devAddr;	/* Device buffer address (DMA); a host pointer on PC */
 	u32 		size;		/* DMA transfer size in bytes */
 	OSPiHandle	*piHandle;	/* PI device handle */
 } OSIoMesg;
@@ -895,10 +895,11 @@ extern u32 		osPiGetStatus(void);
 extern s32		osPiGetDeviceType(void);
 extern s32		osPiRawWriteIo(u32, u32);
 extern s32		osPiRawReadIo(u32, u32 *);
-extern s32		osPiRawStartDma(s32, u32, void *, u32);
+extern s32		osPiRawStartDma(s32, uintptr_t, void *, u32);
 extern s32		osPiWriteIo(u32, u32);
 extern s32		osPiReadIo(u32, u32 *);
-extern s32		osPiStartDma(OSIoMesg *, s32, s32, u32, void *, u32,
+/* devAddr is uintptr_t: u32 on N64, and on PC it carries a host pointer */
+extern s32		osPiStartDma(OSIoMesg *, s32, s32, uintptr_t, void *, u32,
 				     OSMesgQueue *);
 extern void		osCreatePiManager(OSPri, OSMesgQueue *, OSMesg *, s32);
 
